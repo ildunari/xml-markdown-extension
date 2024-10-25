@@ -1,13 +1,13 @@
 // TypingMind XML to Markdown Extension
-// Version 2.0
-// Enhanced Claude Tag Support
+// Version 2.1
+// Enhanced Claude Tag Support with TypingMind-specific handling
 
-// Configuration object for extension settings
 const CONFIG = {
-    debugMode: false,
+    debugMode: true,
     elementIds: {
-        chatContainer: 'chat-container',
-        messageContent: 'message-content'
+        responseBlock: 'response-block',
+        aiResponse: 'ai-response',
+        chatContainer: 'chat-messages-container'
     },
     // All supported Claude-specific and general XML tags
     knownXmlTags: [
@@ -31,61 +31,83 @@ const CONFIG = {
     ]
 };
 
-// Utility logger with timestamp
+// Enhanced logger with timestamps and message types
 const logger = {
-    log: (msg) => CONFIG.debugMode && console.log(`[XML-MD Extension ${new Date().toISOString()}]:`, msg),
-    error: (msg) => CONFIG.debugMode && console.error(`[XML-MD Extension ${new Date().toISOString()}]:`, msg)
+    _log(type, msg, data = null) {
+        if (!CONFIG.debugMode) return;
+        const timestamp = new Date().toISOString();
+        const logMessage = `[XML-MD ${type} ${timestamp}]: ${msg}`;
+        if (data) {
+            console.group(logMessage);
+            console.log('Details:', data);
+            console.groupEnd();
+        } else {
+            console.log(logMessage);
+        }
+    },
+    info: (msg, data) => logger._log('INFO', msg, data),
+    warn: (msg, data) => logger._log('WARN', msg, data),
+    error: (msg, data) => logger._log('ERROR', msg, data),
+    debug: (msg, data) => logger._log('DEBUG', msg, data)
 };
 
-// Tag counter for unique IDs
+// Tag tracking with enhanced debugging
 const tagTracker = {
     counts: {},
+    processed: new Set(),
     increment(type) {
         this.counts[type] = (this.counts[type] || 0) + 1;
+        logger.debug(`Incrementing tag counter: ${type}`, this.counts);
         return this.counts[type];
+    },
+    markProcessed(elementId) {
+        this.processed.add(elementId);
+        logger.debug(`Marked as processed: ${elementId}`);
+    },
+    isProcessed(elementId) {
+        return this.processed.has(elementId);
     },
     reset() {
         this.counts = {};
+        this.processed.clear();
+        logger.debug('Tag tracker reset');
     }
 };
 
-// Enhanced XML detection with Claude-specific patterns
+// Enhanced XML detection specifically for Claude's output
 function containsXML(text) {
     if (!text) return false;
     
     // Check for explicit XML markers
     if (text.includes('<?xml') || text.includes('<!DOCTYPE')) {
+        logger.debug('Found explicit XML markers');
         return true;
     }
 
     // Check for Claude-specific tags
     const claudeTagPattern = /<(thinking|ASSISTANT_PROFILE|FILE_ATTACHMENT)[^>]*>/i;
     if (claudeTagPattern.test(text)) {
+        logger.debug('Found Claude-specific tags');
         return true;
     }
 
     // Check for known tag patterns
     const knownTagPattern = new RegExp(`<(/?)(${CONFIG.knownXmlTags.join('|')})(\\s|>|/>)`, 'i');
     if (knownTagPattern.test(text)) {
-        return true;
-    }
-
-    // Check for well-formed XML structure
-    const hasMatchingTags = /<([a-zA-Z][a-zA-Z0-9_]*)[^>]*>[\s\S]*?<\/\1>/g.test(text);
-    if (hasMatchingTags) {
+        logger.debug('Found known XML tags');
         return true;
     }
 
     return false;
 }
 
-// Comprehensive conversion rules for all supported tags
+// Conversion rules updated for TypingMind's prose formatting
 const conversionRules = [
-    // Thinking process
+    // Thinking process with prose formatting
     {
         pattern: /<thinking>([\s\S]*?)<\/thinking>/g,
         replacement: (match, content) => `
-            <div class="claude-block thinking-block" id="thinking-${tagTracker.increment('thinking')}">
+            <div class="claude-block thinking-block prose" id="thinking-${tagTracker.increment('thinking')}">
                 <div class="block-header">
                     <span class="icon">💭</span>
                     <span class="title">Thought Process</span>
@@ -98,45 +120,11 @@ const conversionRules = [
         `
     },
     
-    // File attachments
-    {
-        pattern: /<FILE_ATTACHMENT>([\s\S]*?)<\/FILE_ATTACHMENT>/g,
-        replacement: (match, content) => `
-            <div class="claude-block file-block" id="file-${tagTracker.increment('file')}">
-                <div class="block-header">
-                    <span class="icon">📎</span>
-                    <span class="title">File Attachment</span>
-                    <button class="collapse-toggle">▼</button>
-                </div>
-                <div class="block-content">
-                    ${content.trim()}
-                </div>
-            </div>
-        `
-    },
-
-    // Assistant profile
-    {
-        pattern: /<ASSISTANT_PROFILE.*?>([\s\S]*?)<\/ASSISTANT_PROFILE>/g,
-        replacement: (match, content) => `
-            <div class="claude-block profile-block" id="profile-${tagTracker.increment('profile')}">
-                <div class="block-header">
-                    <span class="icon">🤖</span>
-                    <span class="title">Assistant Profile</span>
-                    <button class="collapse-toggle">▼</button>
-                </div>
-                <div class="block-content">
-                    ${content.trim()}
-                </div>
-            </div>
-        `
-    },
-
-    // Function calls
+    // Function calls with syntax highlighting
     {
         pattern: /<function_calls>([\s\S]*?)<\/function_calls>/g,
         replacement: (match, content) => `
-            <div class="claude-block function-block" id="function-${tagTracker.increment('function')}">
+            <div class="claude-block function-block prose" id="function-${tagTracker.increment('function')}">
                 <div class="block-header">
                     <span class="icon">⚙️</span>
                     <span class="title">Function Execution</span>
@@ -146,17 +134,34 @@ const conversionRules = [
                     </div>
                 </div>
                 <div class="block-content">
-                    <pre><code>${content.trim()}</code></pre>
+                    <pre><code class="language-javascript">${content.trim()}</code></pre>
                 </div>
             </div>
         `
     },
 
-    // Context blocks
+    // Error messages with highlighting
+    {
+        pattern: /<error>([\s\S]*?)<\/error>/g,
+        replacement: (match, content) => `
+            <div class="claude-block error-block prose" id="error-${tagTracker.increment('error')}">
+                <div class="block-header">
+                    <span class="icon">❌</span>
+                    <span class="title">Error</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
+
+    // Context blocks with enhanced formatting
     {
         pattern: /<context>([\s\S]*?)<\/context>/g,
         replacement: (match, content) => `
-            <div class="claude-block context-block" id="context-${tagTracker.increment('context')}">
+            <div class="claude-block context-block prose" id="context-${tagTracker.increment('context')}">
                 <div class="block-header">
                     <span class="icon">🔍</span>
                     <span class="title">Context</span>
@@ -169,31 +174,14 @@ const conversionRules = [
         `
     },
 
-    // Instructions
+    // File attachments with collapsible content
     {
-        pattern: /<instructions>([\s\S]*?)<\/instructions>/g,
+        pattern: /<FILE_ATTACHMENT>([\s\S]*?)<\/FILE_ATTACHMENT>/g,
         replacement: (match, content) => `
-            <div class="claude-block instruction-block" id="instruction-${tagTracker.increment('instruction')}">
+            <div class="claude-block file-block prose" id="file-${tagTracker.increment('file')}">
                 <div class="block-header">
-                    <span class="icon">📝</span>
-                    <span class="title">Instructions</span>
-                    <button class="collapse-toggle">▼</button>
-                </div>
-                <div class="block-content">
-                    ${content.trim()}
-                </div>
-            </div>
-        `
-    },
-
-    // Error messages
-    {
-        pattern: /<error>([\s\S]*?)<\/error>/g,
-        replacement: (match, content) => `
-            <div class="claude-block error-block" id="error-${tagTracker.increment('error')}">
-                <div class="block-header">
-                    <span class="icon">❌</span>
-                    <span class="title">Error</span>
+                    <span class="icon">📎</span>
+                    <span class="title">File Attachment</span>
                     <button class="collapse-toggle">▼</button>
                 </div>
                 <div class="block-content">
@@ -204,13 +192,25 @@ const conversionRules = [
     }
 ];
 
-// Process messages containing XML
+// Process messages with enhanced error handling and debugging
 function processMessage(element) {
     try {
-        const content = element.textContent;
-        if (!content || !containsXML(content)) return;
+        // Generate unique ID for tracking
+        const elementId = element.id || `msg-${Date.now()}`;
+        
+        // Check if already processed
+        if (tagTracker.isProcessed(elementId)) {
+            logger.debug(`Skipping already processed message: ${elementId}`);
+            return;
+        }
 
-        logger.log('Processing message with XML content');
+        const content = element.textContent;
+        if (!content || !containsXML(content)) {
+            logger.debug(`No XML content found in message: ${elementId}`);
+            return;
+        }
+
+        logger.info(`Processing message: ${elementId}`, { contentLength: content.length });
         
         // Reset tag counter for new message
         tagTracker.reset();
@@ -228,40 +228,50 @@ function processMessage(element) {
             // Add event listeners to new elements
             addBlockHandlers(element);
             
-            logger.log('Message converted successfully');
+            // Mark as processed
+            tagTracker.markProcessed(elementId);
+            
+            logger.info(`Successfully converted message: ${elementId}`);
         }
     } catch (error) {
-        logger.error(`Error processing message: ${error.message}`);
+        logger.error(`Error processing message: ${error.message}`, error);
     }
 }
 
-// Add event handlers to interactive elements
+// Enhanced event handlers for interactive elements
 function addBlockHandlers(container) {
     // Collapse toggle handlers
     container.querySelectorAll('.collapse-toggle').forEach(button => {
         button.addEventListener('click', () => {
-            const content = button.closest('.claude-block').querySelector('.block-content');
+            const block = button.closest('.claude-block');
+            const content = block.querySelector('.block-content');
             const isVisible = content.style.display !== 'none';
+            
             content.style.display = isVisible ? 'none' : 'block';
             button.textContent = isVisible ? '▼' : '▲';
+            
+            logger.debug(`Toggle block visibility: ${block.id}`, { isVisible: !isVisible });
         });
     });
 
     // Copy button handlers
     container.querySelectorAll('.copy-button').forEach(button => {
         button.addEventListener('click', () => {
-            const content = button.closest('.claude-block').querySelector('.block-content').textContent;
+            const block = button.closest('.claude-block');
+            const content = block.querySelector('.block-content').textContent;
+            
             navigator.clipboard.writeText(content.trim())
                 .then(() => {
                     button.textContent = '✓';
                     setTimeout(() => button.textContent = '📋', 2000);
+                    logger.debug(`Copied content from block: ${block.id}`);
                 })
                 .catch(err => logger.error('Copy failed:', err));
         });
     });
 }
 
-// Add custom styles
+// Add custom styles with TypingMind-specific adjustments
 function addCustomStyles() {
     const style = document.createElement('style');
     style.textContent = `
@@ -327,7 +337,7 @@ function addCustomStyles() {
             border-left: 4px solid #28a745;
         }
 
-        .profile-block {
+        .file-block {
             border-left: 4px solid #6f42c1;
         }
 
@@ -357,27 +367,48 @@ function addCustomStyles() {
                 margin-top: 8px;
             }
         }
+
+        /* TypingMind-specific adjustments */
+        .prose .claude-block {
+            max-width: none;
+        }
+
+        .prose pre {
+            margin: 0;
+        }
+
+        .prose .block-content {
+            margin: 0;
+        }
     `;
     document.head.appendChild(style);
+    logger.info('Custom styles added');
 }
 
-// Observe chat container for new messages
+// Enhanced observer setup for TypingMind
 function setupObserver() {
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
-            if (mutation.addedNodes.length) {
-                setTimeout(processAllMessages, 100);
-            }
+            // Look for AI responses
+            const aiResponses = document.querySelectorAll('[data-element-id="ai-response"]');
+            aiResponses.forEach(response => {
+                if (!tagTracker.isProcessed(response.id)) {
+                    logger.debug('Found new AI response', { id: response.id });
+                    processMessage(response);
+                }
+            });
         });
     });
 
-    const chatContainer = document.querySelector(`[data-element-id="${CONFIG.elementIds.chatContainer}"]`);
+    // Observe the chat container
+    const chatContainer = document.querySelector(`.${CONFIG.elementIds.chatContainer}`);
     if (chatContainer) {
         observer.observe(chatContainer, {
             childList: true,
-            subtree: true
+            subtree: true,
+            characterData: true
         });
-        logger.log('Observer set up successfully');
+        logger.info('Observer setup complete', { target: chatContainer });
     } else {
         logger.error('Chat container not found');
     }
@@ -385,13 +416,14 @@ function setupObserver() {
 
 // Process all existing messages
 function processAllMessages() {
-    const messages = document.querySelectorAll(`[data-element-id="${CONFIG.elementIds.messageContent}"]`);
+    const messages = document.querySelectorAll('[data-element-id="ai-response"]');
+    logger.info(`Processing ${messages.length} existing messages`);
     messages.forEach(processMessage);
 }
 
 // Initialize the extension
 function initialize() {
-    logger.log('Initializing XML to Markdown extension');
+    logger.info('Initializing XML to Markdown extension');
     addCustomStyles();
     setupObserver();
     processAllMessages();
