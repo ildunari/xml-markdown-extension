@@ -1,7 +1,8 @@
 // TypingMind XML to Markdown Extension
 // Version 2.1
 // Enhanced Claude Tag Support with TypingMind-specific handling
-
+console.log('=== XML-MD EXTENSION LOADING ===');
+window.XMLMDLoaded = true;
 const CONFIG = {
     debugMode: true,
     elementIds: {
