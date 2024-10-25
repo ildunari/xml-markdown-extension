@@ -1,8 +1,19 @@
 // TypingMind XML to Markdown Extension
-// Version 2.1
-// Enhanced Claude Tag Support with TypingMind-specific handling
-console.log('=== XML-MD EXTENSION LOADING ===');
-window.XMLMDLoaded = true;
+// Version 2.2
+// Enhanced Claude Tag Support with HTML Encoding Handling
+
+// Performance monitoring
+const perfMonitor = {
+    startTime: null,
+    start() {
+        this.startTime = performance.now();
+    },
+    end(operation) {
+        const duration = performance.now() - this.startTime;
+        console.log(`${operation} took ${duration.toFixed(2)}ms`);
+    }
+};
+
 const CONFIG = {
     debugMode: true,
     elementIds: {
@@ -32,7 +43,7 @@ const CONFIG = {
     ]
 };
 
-// Enhanced logger with timestamps and message types
+// Enhanced logger with timestamps and performance tracking
 const logger = {
     _log(type, msg, data = null) {
         if (!CONFIG.debugMode) return;
@@ -50,6 +61,22 @@ const logger = {
     warn: (msg, data) => logger._log('WARN', msg, data),
     error: (msg, data) => logger._log('ERROR', msg, data),
     debug: (msg, data) => logger._log('DEBUG', msg, data)
+};
+
+// HTML Encoder/Decoder utility
+const decoder = {
+    decode(encodedString) {
+        if (!encodedString) return '';
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = encodedString;
+        return textarea.value;
+    },
+    encode(decodedString) {
+        if (!decodedString) return '';
+        const textarea = document.createElement('textarea');
+        textarea.textContent = decodedString;
+        return textarea.innerHTML;
+    }
 };
 
 // Tag tracking with enhanced debugging
@@ -75,26 +102,29 @@ const tagTracker = {
     }
 };
 
-// Enhanced XML detection specifically for Claude's output
+// Enhanced XML detection with decoded content handling
 function containsXML(text) {
     if (!text) return false;
     
+    // Decode content first
+    const decodedText = decoder.decode(text);
+    
     // Check for explicit XML markers
-    if (text.includes('<?xml') || text.includes('<!DOCTYPE')) {
+    if (decodedText.includes('<?xml') || decodedText.includes('<!DOCTYPE')) {
         logger.debug('Found explicit XML markers');
         return true;
     }
 
     // Check for Claude-specific tags
     const claudeTagPattern = /<(thinking|ASSISTANT_PROFILE|FILE_ATTACHMENT)[^>]*>/i;
-    if (claudeTagPattern.test(text)) {
+    if (claudeTagPattern.test(decodedText)) {
         logger.debug('Found Claude-specific tags');
         return true;
     }
 
     // Check for known tag patterns
     const knownTagPattern = new RegExp(`<(/?)(${CONFIG.knownXmlTags.join('|')})(\\s|>|/>)`, 'i');
-    if (knownTagPattern.test(text)) {
+    if (knownTagPattern.test(decodedText)) {
         logger.debug('Found known XML tags');
         return true;
     }
@@ -102,9 +132,9 @@ function containsXML(text) {
     return false;
 }
 
-// Conversion rules updated for TypingMind's prose formatting
+// Conversion rules updated for decoded content
 const conversionRules = [
-    // Thinking process with prose formatting
+    // Thinking process
     {
         pattern: /<thinking>([\s\S]*?)<\/thinking>/g,
         replacement: (match, content) => `
@@ -121,7 +151,7 @@ const conversionRules = [
         `
     },
     
-    // Function calls with syntax highlighting
+    // Function calls
     {
         pattern: /<function_calls>([\s\S]*?)<\/function_calls>/g,
         replacement: (match, content) => `
@@ -141,7 +171,7 @@ const conversionRules = [
         `
     },
 
-    // Error messages with highlighting
+    // Error messages
     {
         pattern: /<error>([\s\S]*?)<\/error>/g,
         replacement: (match, content) => `
@@ -158,7 +188,7 @@ const conversionRules = [
         `
     },
 
-    // Context blocks with enhanced formatting
+    // Context blocks
     {
         pattern: /<context>([\s\S]*?)<\/context>/g,
         replacement: (match, content) => `
@@ -175,7 +205,7 @@ const conversionRules = [
         `
     },
 
-    // File attachments with collapsible content
+    // File attachments
     {
         pattern: /<FILE_ATTACHMENT>([\s\S]*?)<\/FILE_ATTACHMENT>/g,
         replacement: (match, content) => `
@@ -193,86 +223,88 @@ const conversionRules = [
     }
 ];
 
-// Process messages with enhanced error handling and debugging
+// Process messages with decoded content handling
 function processMessage(element) {
     try {
-        // Generate unique ID for tracking
+        perfMonitor.start();
         const elementId = element.id || `msg-${Date.now()}`;
         
-        // Check if already processed
         if (tagTracker.isProcessed(elementId)) {
             logger.debug(`Skipping already processed message: ${elementId}`);
             return;
         }
 
-        const content = element.textContent;
-        if (!content || !containsXML(content)) {
+        // Decode content first
+        const encodedContent = element.innerHTML;
+        const decodedContent = decoder.decode(encodedContent);
+
+        if (!decodedContent || !containsXML(decodedContent)) {
             logger.debug(`No XML content found in message: ${elementId}`);
             return;
         }
 
-        logger.info(`Processing message: ${elementId}`, { contentLength: content.length });
+        logger.info(`Processing message: ${elementId}`, { contentLength: decodedContent.length });
         
-        // Reset tag counter for new message
         tagTracker.reset();
         
-        // Apply conversion rules
-        let processedContent = content;
+        // Apply conversion rules to decoded content
+        let processedContent = decodedContent;
         conversionRules.forEach(rule => {
             processedContent = processedContent.replace(rule.pattern, rule.replacement);
         });
 
-        // Update content if changed
-        if (processedContent !== content) {
-            element.innerHTML = processedContent;
-            
-            // Add event listeners to new elements
+        // Only update if content changed
+        if (processedContent !== decodedContent) {
+            element.innerHTML = decoder.encode(processedContent);
             addBlockHandlers(element);
-            
-            // Mark as processed
             tagTracker.markProcessed(elementId);
-            
             logger.info(`Successfully converted message: ${elementId}`);
         }
+
+        perfMonitor.end(`Process message ${elementId}`);
     } catch (error) {
         logger.error(`Error processing message: ${error.message}`, error);
     }
 }
 
-// Enhanced event handlers for interactive elements
+// Add event handlers with error handling
 function addBlockHandlers(container) {
-    // Collapse toggle handlers
-    container.querySelectorAll('.collapse-toggle').forEach(button => {
-        button.addEventListener('click', () => {
-            const block = button.closest('.claude-block');
-            const content = block.querySelector('.block-content');
-            const isVisible = content.style.display !== 'none';
-            
-            content.style.display = isVisible ? 'none' : 'block';
-            button.textContent = isVisible ? '▼' : '▲';
-            
-            logger.debug(`Toggle block visibility: ${block.id}`, { isVisible: !isVisible });
+    try {
+        // Collapse toggle handlers
+        container.querySelectorAll('.collapse-toggle').forEach(button => {
+            button.addEventListener('click', () => {
+                const block = button.closest('.claude-block');
+                const content = block.querySelector('.block-content');
+                const isVisible = content.style.display !== 'none';
+                
+                content.style.display = isVisible ? 'none' : 'block';
+                button.textContent = isVisible ? '▼' : '▲';
+                
+                logger.debug(`Toggle block visibility: ${block.id}`, { isVisible: !isVisible });
+            });
         });
-    });
 
-    // Copy button handlers
-    container.querySelectorAll('.copy-button').forEach(button => {
-        button.addEventListener('click', () => {
-            const block = button.closest('.claude-block');
-            const content = block.querySelector('.block-content').textContent;
-            
-            navigator.clipboard.writeText(content.trim())
-                .then(() => {
-                    button.textContent = '✓';
-                    setTimeout(() => button.textContent = '📋', 2000);
-                    logger.debug(`Copied content from block: ${block.id}`);
-                })
-                .catch(err => logger.error('Copy failed:', err));
+        // Copy button handlers
+        container.querySelectorAll('.copy-button').forEach(button => {
+            button.addEventListener('click', () => {
+                const block = button.closest('.claude-block');
+                const content = block.querySelector('.block-content').textContent;
+                
+                navigator.clipboard.writeText(content.trim())
+                    .then(() => {
+                        button.textContent = '✓';
+                        setTimeout(() => button.textContent = '📋', 2000);
+                        logger.debug(`Copied content from block: ${block.id}`);
+                    })
+                    .catch(err => logger.error('Copy failed:', err));
+            });
         });
-    });
+    } catch (error) {
+        logger.error('Error adding block handlers:', error);
+    }
 }
 
-// Add custom styles with TypingMind-specific adjustments
+// Add custom styles
 function addCustomStyles() {
     const style = document.createElement('style');
     style.textContent = `
@@ -386,7 +418,7 @@ function addCustomStyles() {
     logger.info('Custom styles added');
 }
 
-// Enhanced observer setup for TypingMind
+// Enhanced observer setup
 function setupObserver() {
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
@@ -424,10 +456,17 @@ function processAllMessages() {
 
 // Initialize the extension
 function initialize() {
+    console.log('=== XML-MD EXTENSION LOADING ===');
+    window.XMLMDLoaded = true;
+    
     logger.info('Initializing XML to Markdown extension');
+    perfMonitor.start();
+    
     addCustomStyles();
     setupObserver();
     processAllMessages();
+    
+    perfMonitor.end('Extension initialization');
 }
 
 // Start the extension
