@@ -1,6 +1,6 @@
 // TypingMind XML to Markdown Extension
-// Version 2.2
-// Enhanced Claude Tag Support with HTML Encoding Handling
+// Version 2.3
+// Enhanced with correct DOM targeting and streaming support
 
 // Performance monitoring
 const perfMonitor = {
@@ -14,36 +14,40 @@ const perfMonitor = {
     }
 };
 
+// Configuration based on TypingMind's DOM structure
 const CONFIG = {
     debugMode: true,
     elementIds: {
-        responseBlock: 'response-block',
-        aiResponse: 'ai-response',
-        chatContainer: 'chat-messages-container'
+        chatSpace: 'chat-space-middle-part',
+        chatItem: 'custom-chat-item',
+        messageInput: 'message-input',
+        background: 'chat-space-background'
     },
-    // All supported Claude-specific and general XML tags
+    attributes: {
+        streaming: 'data-streaming'
+    },
+    classes: {
+        preserve: [
+            'px-4', 'py-2', 'flex', 'items-center',
+            'text-sm', 'font-medium', 'dark:bg-gray-950',
+            'text-gray-900'
+        ]
+    },
+    // XML tags to transform
     knownXmlTags: [
-        // Core Claude tags
-        'thinking', 'instructions', 'context', 'output',
-        'ASSISTANT_PROFILE', 'ROLE', 'PERSONA',
-        'FILE_ATTACHMENT', 'FILE_NAME', 'FILE_CONTENT',
-        'function_calls', 'invoke', 'parameter', 'function_results',
-        // Analysis and processing tags
-        'analysis', 'evaluation', 'reasoning', 'conclusion',
-        'initial_analysis', 'intermediate_steps', 'final_conclusion',
-        'confidence_level', 'alternative_approaches',
-        // Document structure tags
-        'document', 'section', 'content', 'toc',
-        // Error and status tags
-        'error', 'warning', 'validation_error', 'system_message',
-        // Data organization tags
-        'key_points', 'supporting_evidence', 'counter_arguments', 'references',
-        // Progress indicators
-        'progress_status', 'completion_percentage', 'time_estimate', 'processing_stage'
+        'thinking', 'streaming', 'function_calls',
+        'error', 'context', 'assistant_profile',
+        'file_attachment'
     ]
 };
 
-// Enhanced logger with timestamps and performance tracking
+// Make extension globally accessible
+window.XMLMDExtension = {
+    CONFIG,
+    initialized: false
+};
+
+// Enhanced logger
 const logger = {
     _log(type, msg, data = null) {
         if (!CONFIG.debugMode) return;
@@ -63,7 +67,7 @@ const logger = {
     debug: (msg, data) => logger._log('DEBUG', msg, data)
 };
 
-// HTML Encoder/Decoder utility
+// HTML Encoder/Decoder
 const decoder = {
     decode(encodedString) {
         if (!encodedString) return '';
@@ -79,61 +83,80 @@ const decoder = {
     }
 };
 
-// Tag tracking with enhanced debugging
+// Tag tracking with streaming support
 const tagTracker = {
     counts: {},
     processed: new Set(),
+    streaming: new Set(),
+    
     increment(type) {
         this.counts[type] = (this.counts[type] || 0) + 1;
-        logger.debug(`Incrementing tag counter: ${type}`, this.counts);
         return this.counts[type];
     },
-    markProcessed(elementId) {
+    
+    markProcessed(elementId, isStreaming = false) {
         this.processed.add(elementId);
-        logger.debug(`Marked as processed: ${elementId}`);
+        if (isStreaming) {
+            this.streaming.add(elementId);
+        } else {
+            this.streaming.delete(elementId);
+        }
+        logger.debug(`Marked ${isStreaming ? 'streaming' : 'completed'}: ${elementId}`);
     },
+    
     isProcessed(elementId) {
         return this.processed.has(elementId);
     },
+    
+    isStreaming(elementId) {
+        return this.streaming.has(elementId);
+    },
+    
     reset() {
         this.counts = {};
         this.processed.clear();
-        logger.debug('Tag tracker reset');
+        this.streaming.clear();
     }
 };
 
-// Enhanced XML detection with decoded content handling
+// Enhanced XML detection
 function containsXML(text) {
     if (!text) return false;
     
-    // Decode content first
     const decodedText = decoder.decode(text);
     
-    // Check for explicit XML markers
-    if (decodedText.includes('<?xml') || decodedText.includes('<!DOCTYPE')) {
-        logger.debug('Found explicit XML markers');
+    // Check for streaming state
+    if (decodedText.includes('<streaming>')) {
         return true;
     }
-
+    
     // Check for Claude-specific tags
-    const claudeTagPattern = /<(thinking|ASSISTANT_PROFILE|FILE_ATTACHMENT)[^>]*>/i;
-    if (claudeTagPattern.test(decodedText)) {
-        logger.debug('Found Claude-specific tags');
+    const tagPattern = new RegExp(`<(/?)(${CONFIG.knownXmlTags.join('|')})(\\s|>|/>)`, 'i');
+    if (tagPattern.test(decodedText)) {
         return true;
     }
-
-    // Check for known tag patterns
-    const knownTagPattern = new RegExp(`<(/?)(${CONFIG.knownXmlTags.join('|')})(\\s|>|/>)`, 'i');
-    if (knownTagPattern.test(decodedText)) {
-        logger.debug('Found known XML tags');
-        return true;
-    }
-
+    
     return false;
 }
 
-// Conversion rules updated for decoded content
+// Conversion rules with streaming support
 const conversionRules = [
+    // Streaming indicator
+    {
+        pattern: /<streaming>([\s\S]*?)<\/streaming>/g,
+        replacement: (match, content) => `
+            <div class="claude-block streaming-block prose" id="streaming-${tagTracker.increment('streaming')}">
+                <div class="block-header">
+                    <span class="icon">⌛</span>
+                    <span class="title">Streaming Response</span>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
+    
     // Thinking process
     {
         pattern: /<thinking>([\s\S]*?)<\/thinking>/g,
@@ -170,7 +193,7 @@ const conversionRules = [
             </div>
         `
     },
-
+    
     // Error messages
     {
         pattern: /<error>([\s\S]*?)<\/error>/g,
@@ -186,122 +209,82 @@ const conversionRules = [
                 </div>
             </div>
         `
-    },
-
-    // Context blocks
-    {
-        pattern: /<context>([\s\S]*?)<\/context>/g,
-        replacement: (match, content) => `
-            <div class="claude-block context-block prose" id="context-${tagTracker.increment('context')}">
-                <div class="block-header">
-                    <span class="icon">🔍</span>
-                    <span class="title">Context</span>
-                    <button class="collapse-toggle">▼</button>
-                </div>
-                <div class="block-content">
-                    ${content.trim()}
-                </div>
-            </div>
-        `
-    },
-
-    // File attachments
-    {
-        pattern: /<FILE_ATTACHMENT>([\s\S]*?)<\/FILE_ATTACHMENT>/g,
-        replacement: (match, content) => `
-            <div class="claude-block file-block prose" id="file-${tagTracker.increment('file')}">
-                <div class="block-header">
-                    <span class="icon">📎</span>
-                    <span class="title">File Attachment</span>
-                    <button class="collapse-toggle">▼</button>
-                </div>
-                <div class="block-content">
-                    ${content.trim()}
-                </div>
-            </div>
-        `
     }
 ];
 
-// Process messages with decoded content handling
+// Process messages with streaming support
 function processMessage(element) {
     try {
         perfMonitor.start();
-        const elementId = element.id || `msg-${Date.now()}`;
         
-        if (tagTracker.isProcessed(elementId)) {
-            logger.debug(`Skipping already processed message: ${elementId}`);
+        const elementId = element.id || `msg-${Date.now()}`;
+        const isStreaming = element.getAttribute(CONFIG.attributes.streaming) === 'true';
+        
+        // Skip if already processed and streaming state hasn't changed
+        if (tagTracker.isProcessed(elementId) && tagTracker.isStreaming(elementId) === isStreaming) {
             return;
         }
-
-        // Decode content first
+        
+        // Decode content
         const encodedContent = element.innerHTML;
         const decodedContent = decoder.decode(encodedContent);
-
+        
         if (!decodedContent || !containsXML(decodedContent)) {
-            logger.debug(`No XML content found in message: ${elementId}`);
             return;
         }
-
-        logger.info(`Processing message: ${elementId}`, { contentLength: decodedContent.length });
         
-        tagTracker.reset();
+        logger.info(`Processing message: ${elementId}`, {
+            streaming: isStreaming,
+            contentLength: decodedContent.length
+        });
         
-        // Apply conversion rules to decoded content
+        // Apply conversion rules
         let processedContent = decodedContent;
         conversionRules.forEach(rule => {
             processedContent = processedContent.replace(rule.pattern, rule.replacement);
         });
-
-        // Only update if content changed
+        
+        // Update content if changed
         if (processedContent !== decodedContent) {
             element.innerHTML = decoder.encode(processedContent);
             addBlockHandlers(element);
-            tagTracker.markProcessed(elementId);
-            logger.info(`Successfully converted message: ${elementId}`);
+            tagTracker.markProcessed(elementId, isStreaming);
         }
-
+        
         perfMonitor.end(`Process message ${elementId}`);
     } catch (error) {
         logger.error(`Error processing message: ${error.message}`, error);
     }
 }
 
-// Add event handlers with error handling
+// Add event handlers
 function addBlockHandlers(container) {
-    try {
-        // Collapse toggle handlers
-        container.querySelectorAll('.collapse-toggle').forEach(button => {
-            button.addEventListener('click', () => {
-                const block = button.closest('.claude-block');
-                const content = block.querySelector('.block-content');
-                const isVisible = content.style.display !== 'none';
-                
-                content.style.display = isVisible ? 'none' : 'block';
-                button.textContent = isVisible ? '▼' : '▲';
-                
-                logger.debug(`Toggle block visibility: ${block.id}`, { isVisible: !isVisible });
-            });
+    // Collapse toggle handlers
+    container.querySelectorAll('.collapse-toggle').forEach(button => {
+        button.addEventListener('click', () => {
+            const block = button.closest('.claude-block');
+            const content = block.querySelector('.block-content');
+            const isVisible = content.style.display !== 'none';
+            
+            content.style.display = isVisible ? 'none' : 'block';
+            button.textContent = isVisible ? '▼' : '▲';
         });
+    });
 
-        // Copy button handlers
-        container.querySelectorAll('.copy-button').forEach(button => {
-            button.addEventListener('click', () => {
-                const block = button.closest('.claude-block');
-                const content = block.querySelector('.block-content').textContent;
-                
-                navigator.clipboard.writeText(content.trim())
-                    .then(() => {
-                        button.textContent = '✓';
-                        setTimeout(() => button.textContent = '📋', 2000);
-                        logger.debug(`Copied content from block: ${block.id}`);
-                    })
-                    .catch(err => logger.error('Copy failed:', err));
-            });
+    // Copy button handlers
+    container.querySelectorAll('.copy-button').forEach(button => {
+        button.addEventListener('click', () => {
+            const block = button.closest('.claude-block');
+            const content = block.querySelector('.block-content').textContent;
+            
+            navigator.clipboard.writeText(content.trim())
+                .then(() => {
+                    button.textContent = '✓';
+                    setTimeout(() => button.textContent = '📋', 2000);
+                })
+                .catch(err => logger.error('Copy failed:', err));
         });
-    } catch (error) {
-        logger.error('Error adding block handlers:', error);
-    }
+    });
 }
 
 // Add custom styles
@@ -362,20 +345,17 @@ function addCustomStyles() {
             border-left: 4px solid #0366d6;
         }
 
+        .streaming-block {
+            border-left: 4px solid #6f42c1;
+            opacity: 0.8;
+        }
+
         .error-block {
             border-left: 4px solid #cb2431;
         }
 
         .function-block {
             border-left: 4px solid #28a745;
-        }
-
-        .file-block {
-            border-left: 4px solid #6f42c1;
-        }
-
-        .context-block {
-            border-left: 4px solid #f6b73c;
         }
 
         /* Dark mode support */
@@ -400,64 +380,49 @@ function addCustomStyles() {
                 margin-top: 8px;
             }
         }
-
-        /* TypingMind-specific adjustments */
-        .prose .claude-block {
-            max-width: none;
-        }
-
-        .prose pre {
-            margin: 0;
-        }
-
-        .prose .block-content {
-            margin: 0;
-        }
     `;
     document.head.appendChild(style);
     logger.info('Custom styles added');
 }
 
-// Enhanced observer setup
+// Setup mutation observer
 function setupObserver() {
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
-            // Look for AI responses
-            const aiResponses = document.querySelectorAll('[data-element-id="ai-response"]');
-            aiResponses.forEach(response => {
-                if (!tagTracker.isProcessed(response.id)) {
-                    logger.debug('Found new AI response', { id: response.id });
-                    processMessage(response);
-                }
-            });
+            if (mutation.type === 'childList' || mutation.type === 'characterData') {
+                const chatItems = document.querySelectorAll(`[data-element-id="${CONFIG.elementIds.chatItem}"]`);
+                chatItems.forEach(item => processMessage(item));
+            }
         });
     });
 
-    // Observe the chat container
-    const chatContainer = document.querySelector(`.${CONFIG.elementIds.chatContainer}`);
-    if (chatContainer) {
-        observer.observe(chatContainer, {
+    // Observe the chat space
+    const chatSpace = document.querySelector(`[data-element-id="${CONFIG.elementIds.chatSpace}"]`);
+    if (chatSpace) {
+        observer.observe(chatSpace, {
             childList: true,
             subtree: true,
-            characterData: true
+            characterData: true,
+            attributes: true,
+            attributeFilter: [CONFIG.attributes.streaming]
         });
-        logger.info('Observer setup complete', { target: chatContainer });
+        logger.info('Observer setup complete', { target: chatSpace });
     } else {
-        logger.error('Chat container not found');
+        logger.error('Chat space not found');
     }
 }
 
-// Process all existing messages
+// Process existing messages
 function processAllMessages() {
-    const messages = document.querySelectorAll('[data-element-id="ai-response"]');
-    logger.info(`Processing ${messages.length} existing messages`);
-    messages.forEach(processMessage);
+    const chatItems = document.querySelectorAll(`[data-element-id="${CONFIG.elementIds.chatItem}"]`);
+    logger.info(`Processing ${chatItems.length} existing messages`);
+    chatItems.forEach(processMessage);
 }
 
 // Initialize the extension
 function initialize() {
     console.log('=== XML-MD EXTENSION LOADING ===');
-    window.XMLMDLoaded = true;
+    window.XMLMDExtension.initialized = true;
     
     logger.info('Initializing XML to Markdown extension');
     perfMonitor.start();
