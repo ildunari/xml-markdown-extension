@@ -1,206 +1,233 @@
 // TypingMind XML to Markdown Extension
-// Version 1.1
-// Author: [Your Name]
-// Last Updated: 2024-10-24
+// Version 2.0
+// Enhanced Claude Tag Support
 
+// Configuration object for extension settings
 const CONFIG = {
+    debugMode: false,
     elementIds: {
         chatContainer: 'chat-container',
         messageContent: 'message-content'
     },
-    debugMode: false,
-    // Define known XML structures we want to specifically handle
+    // All supported Claude-specific and general XML tags
     knownXmlTags: [
-        // Common document structure tags
-        'document', 'section', 'content',
-        // Specific use case tags
-        'endnote_library', 'text_with_citations', 'converted_text',
-        'unmatched_citations', 'notes',
-        // Generic content tags
-        'output', 'result', 'response', 'data',
-        // Specialized tags
-        'code', 'example', 'summary', 'details',
-        // Analysis tags
-        'analysis', 'evaluation', 'recommendation',
+        // Core Claude tags
+        'thinking', 'instructions', 'context', 'output',
+        'ASSISTANT_PROFILE', 'ROLE', 'PERSONA',
+        'FILE_ATTACHMENT', 'FILE_NAME', 'FILE_CONTENT',
+        'function_calls', 'invoke', 'parameter', 'function_results',
+        // Analysis and processing tags
+        'analysis', 'evaluation', 'reasoning', 'conclusion',
+        'initial_analysis', 'intermediate_steps', 'final_conclusion',
+        'confidence_level', 'alternative_approaches',
+        // Document structure tags
+        'document', 'section', 'content', 'toc',
         // Error and status tags
-        'error', 'warning', 'status', 'message'
+        'error', 'warning', 'validation_error', 'system_message',
+        // Data organization tags
+        'key_points', 'supporting_evidence', 'counter_arguments', 'references',
+        // Progress indicators
+        'progress_status', 'completion_percentage', 'time_estimate', 'processing_stage'
     ]
 };
 
-// Utility logger
+// Utility logger with timestamp
 const logger = {
-    log: (msg) => CONFIG.debugMode && console.log('[XML-MD Extension]:', msg),
-    error: (msg) => CONFIG.debugMode && console.error('[XML-MD Extension]:', msg)
+    log: (msg) => CONFIG.debugMode && console.log(`[XML-MD Extension ${new Date().toISOString()}]:`, msg),
+    error: (msg) => CONFIG.debugMode && console.error(`[XML-MD Extension ${new Date().toISOString()}]:`, msg)
 };
 
-// Enhanced XML detection
+// Tag counter for unique IDs
+const tagTracker = {
+    counts: {},
+    increment(type) {
+        this.counts[type] = (this.counts[type] || 0) + 1;
+        return this.counts[type];
+    },
+    reset() {
+        this.counts = {};
+    }
+};
+
+// Enhanced XML detection with Claude-specific patterns
 function containsXML(text) {
     if (!text) return false;
     
-    // Helper function to count XML-like structures
-    function countXMLStructures(text) {
-        const openingTags = (text.match(/<[a-zA-Z][a-zA-Z0-9_]*[^>]*>/g) || []).length;
-        const closingTags = (text.match(/<\/[a-zA-Z][a-zA-Z0-9_]*>/g) || []).length;
-        return { openingTags, closingTags };
-    }
-
-    // 1. Check for explicit XML markers
+    // Check for explicit XML markers
     if (text.includes('<?xml') || text.includes('<!DOCTYPE')) {
         return true;
     }
 
-    // 2. Check for known XML tag patterns
+    // Check for Claude-specific tags
+    const claudeTagPattern = /<(thinking|ASSISTANT_PROFILE|FILE_ATTACHMENT)[^>]*>/i;
+    if (claudeTagPattern.test(text)) {
+        return true;
+    }
+
+    // Check for known tag patterns
     const knownTagPattern = new RegExp(`<(/?)(${CONFIG.knownXmlTags.join('|')})(\\s|>|/>)`, 'i');
     if (knownTagPattern.test(text)) {
         return true;
     }
 
-    // 3. Check for well-formed XML-like structure
-    const counts = countXMLStructures(text);
-    if (counts.openingTags >= 2 && counts.openingTags === counts.closingTags) {
-        // Look for nested structure
-        const hasNestedTags = /<[a-zA-Z][a-zA-Z0-9_]*[^>]*>[^<]*<[a-zA-Z][a-zA-Z0-9_]*[^>]*>/g.test(text);
-        if (hasNestedTags) {
-            return true;
-        }
-    }
-
-    // 4. Check for specific patterns that indicate structured XML output
-    const structuredPatterns = [
-        /<\w+>[\s\S]*<\/\w+>/m,  // Basic XML structure
-        /<\w+\s+[^>]*>[\s\S]*<\/\w+>/m,  // XML with attributes
-        /<([a-z_]+)>[\s\S]*<\/\1>/im,  // Matching opening/closing tags
-    ];
-    
-    if (structuredPatterns.some(pattern => pattern.test(text))) {
-        // Additional validation to ensure it's not just HTML or markdown
-        const potentialXML = text.match(/<[^>]+>/g) || [];
-        const looksLikeStructuredData = potentialXML.some(tag => {
-            // Check if tags follow XML naming conventions
-            return /^<[a-z_][a-z0-9_]*(_[a-z0-9_]+)*>$/i.test(tag) ||
-                   /^<\/[a-z_][a-z0-9_]*(_[a-z0-9_]+)*>$/i.test(tag);
-        });
-        return looksLikeStructuredData;
-    }
-
-    // 5. Exclude common false positives
-    const falsePositives = [
-        /^```/m,  // Code blocks
-        /^>\s/m,  // Blockquotes
-        /<http/,  // URLs
-        /<mailto:/,  // Email links
-        /$$[^$$]+\]$$[^$$]+\)/  // Markdown links
-    ];
-    
-    if (falsePositives.some(pattern => pattern.test(text))) {
-        return false;
+    // Check for well-formed XML structure
+    const hasMatchingTags = /<([a-zA-Z][a-zA-Z0-9_]*)[^>]*>[\s\S]*?<\/\1>/g.test(text);
+    if (hasMatchingTags) {
+        return true;
     }
 
     return false;
 }
 
-// Conversion rules
+// Comprehensive conversion rules for all supported tags
 const conversionRules = [
-    // Headers
-    { pattern: /<h1>(.*?)<\/h1>/g, replacement: '# $1\n' },
-    { pattern: /<h2>(.*?)<\/h2>/g, replacement: '## $1\n' },
-    { pattern: /<h3>(.*?)<\/h3>/g, replacement: '### $1\n' },
-    { pattern: /<h4>(.*?)<\/h4>/g, replacement: '#### $1\n' },
+    // Thinking process
+    {
+        pattern: /<thinking>([\s\S]*?)<\/thinking>/g,
+        replacement: (match, content) => `
+            <div class="claude-block thinking-block" id="thinking-${tagTracker.increment('thinking')}">
+                <div class="block-header">
+                    <span class="icon">💭</span>
+                    <span class="title">Thought Process</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
     
-    // Text formatting
-    { pattern: /<strong>(.*?)<\/strong>/g, replacement: '**$1**' },
-    { pattern: /<b>(.*?)<\/b>/g, replacement: '**$1**' },
-    { pattern: /<em>(.*?)<\/em>/g, replacement: '*$1*' },
-    { pattern: /<i>(.*?)<\/i>/g, replacement: '*$1*' },
-    { pattern: /<code>(.*?)<\/code>/g, replacement: '`$1`' },
-    
-    // Lists
-    { pattern: /<ul>(.*?)<\/ul>/gs, replacement: '$1\n' },
-    { pattern: /<ol>(.*?)<\/ol>/gs, replacement: '$1\n' },
-    { pattern: /<li>(.*?)<\/li>/g, replacement: '- $1\n' },
-    
-    // Links and images
-    { pattern: /<a href="(.*?)">(.*?)<\/a>/g, replacement: '[$2]($1)' },
-    { pattern: /<img src="(.*?)".*?alt="(.*?)".*?>/g, replacement: '![$2]($1)' },
-    
-    // Paragraphs and breaks
-    { pattern: /<p>(.*?)<\/p>/g, replacement: '$1\n\n' },
-    { pattern: /<br\s*\/?>/g, replacement: '\n' },
-    
-    // Code blocks
-    { pattern: /<pre><code>(.*?)<\/code><\/pre>/gs, replacement: '```\n$1\n```\n' },
-    
-    // Tables
-    { pattern: /<table>(.*?)<\/table>/gs, replacement: '$1\n' },
-    { pattern: /<tr>(.*?)<\/tr>/g, replacement: '$1|\n' },
-    { pattern: /<th>(.*?)<\/th>/g, replacement: '| $1 ' },
-    { pattern: /<td>(.*?)<\/td>/g, replacement: '| $1 ' },
-    
-    // Blockquotes
-    { pattern: /<blockquote>(.*?)<\/blockquote>/gs, replacement: '> $1\n' }
+    // File attachments
+    {
+        pattern: /<FILE_ATTACHMENT>([\s\S]*?)<\/FILE_ATTACHMENT>/g,
+        replacement: (match, content) => `
+            <div class="claude-block file-block" id="file-${tagTracker.increment('file')}">
+                <div class="block-header">
+                    <span class="icon">📎</span>
+                    <span class="title">File Attachment</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
+
+    // Assistant profile
+    {
+        pattern: /<ASSISTANT_PROFILE.*?>([\s\S]*?)<\/ASSISTANT_PROFILE>/g,
+        replacement: (match, content) => `
+            <div class="claude-block profile-block" id="profile-${tagTracker.increment('profile')}">
+                <div class="block-header">
+                    <span class="icon">🤖</span>
+                    <span class="title">Assistant Profile</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
+
+    // Function calls
+    {
+        pattern: /<function_calls>([\s\S]*?)<\/function_calls>/g,
+        replacement: (match, content) => `
+            <div class="claude-block function-block" id="function-${tagTracker.increment('function')}">
+                <div class="block-header">
+                    <span class="icon">⚙️</span>
+                    <span class="title">Function Execution</span>
+                    <div class="block-controls">
+                        <button class="copy-button">📋</button>
+                        <button class="collapse-toggle">▼</button>
+                    </div>
+                </div>
+                <div class="block-content">
+                    <pre><code>${content.trim()}</code></pre>
+                </div>
+            </div>
+        `
+    },
+
+    // Context blocks
+    {
+        pattern: /<context>([\s\S]*?)<\/context>/g,
+        replacement: (match, content) => `
+            <div class="claude-block context-block" id="context-${tagTracker.increment('context')}">
+                <div class="block-header">
+                    <span class="icon">🔍</span>
+                    <span class="title">Context</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
+
+    // Instructions
+    {
+        pattern: /<instructions>([\s\S]*?)<\/instructions>/g,
+        replacement: (match, content) => `
+            <div class="claude-block instruction-block" id="instruction-${tagTracker.increment('instruction')}">
+                <div class="block-header">
+                    <span class="icon">📝</span>
+                    <span class="title">Instructions</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    },
+
+    // Error messages
+    {
+        pattern: /<error>([\s\S]*?)<\/error>/g,
+        replacement: (match, content) => `
+            <div class="claude-block error-block" id="error-${tagTracker.increment('error')}">
+                <div class="block-header">
+                    <span class="icon">❌</span>
+                    <span class="title">Error</span>
+                    <button class="collapse-toggle">▼</button>
+                </div>
+                <div class="block-content">
+                    ${content.trim()}
+                </div>
+            </div>
+        `
+    }
 ];
 
-// Enhanced XML to Markdown conversion
-function xmlToMarkdown(xmlString) {
-    try {
-        // Pre-processing
-        let markdown = xmlString;
-        
-        // Handle special cases first
-        const specialTags = {
-            'converted_text': '### Converted Text\n\n',
-            'unmatched_citations': '### Unmatched Citations\n\n',
-            'notes': '### Notes\n\n',
-            'endnote_library': '### Endnote Library\n\n',
-            'text_with_citations': '### Original Text\n\n'
-        };
-
-        // Replace special tags with headers
-        Object.entries(specialTags).forEach(([tag, header]) => {
-            markdown = markdown.replace(
-                new RegExp(`<${tag}>([\\s\\S]*?)<\/${tag}>`, 'gi'),
-                (match, content) => `${header}${content.trim()}\n\n`
-            );
-        });
-
-        // Apply standard conversion rules
-        conversionRules.forEach(rule => {
-            markdown = markdown.replace(rule.pattern, rule.replacement);
-        });
-
-        // Post-processing
-        markdown = markdown
-            // Clean up excessive newlines
-            .replace(/\n{3,}/g, '\n\n')
-            // Ensure proper spacing around headers
-            .replace(/###/g, '\n###')
-            // Clean up any remaining XML-like tags
-            .replace(/<[^>]+>/g, '')
-            // Trim whitespace
-            .trim();
-
-        return markdown;
-    } catch (error) {
-        logger.error(`Conversion error: ${error.message}`);
-        return xmlString;
-    }
-}
-
-// Process the messages containing XML
+// Process messages containing XML
 function processMessage(element) {
     try {
         const content = element.textContent;
         if (!content || !containsXML(content)) return;
 
         logger.log('Processing message with XML content');
-        const markdown = xmlToMarkdown(content);
         
-        if (markdown !== content) {
-            const markdownDiv = document.createElement('div');
-            markdownDiv.className = 'converted-markdown';
-            markdownDiv.textContent = markdown;
-            element.innerHTML = '';
-            element.appendChild(markdownDiv);
+        // Reset tag counter for new message
+        tagTracker.reset();
+        
+        // Apply conversion rules
+        let processedContent = content;
+        conversionRules.forEach(rule => {
+            processedContent = processedContent.replace(rule.pattern, rule.replacement);
+        });
+
+        // Update content if changed
+        if (processedContent !== content) {
+            element.innerHTML = processedContent;
+            
+            // Add event listeners to new elements
+            addBlockHandlers(element);
+            
             logger.log('Message converted successfully');
         }
     } catch (error) {
@@ -208,7 +235,133 @@ function processMessage(element) {
     }
 }
 
-// Observe the chat container for new messages
+// Add event handlers to interactive elements
+function addBlockHandlers(container) {
+    // Collapse toggle handlers
+    container.querySelectorAll('.collapse-toggle').forEach(button => {
+        button.addEventListener('click', () => {
+            const content = button.closest('.claude-block').querySelector('.block-content');
+            const isVisible = content.style.display !== 'none';
+            content.style.display = isVisible ? 'none' : 'block';
+            button.textContent = isVisible ? '▼' : '▲';
+        });
+    });
+
+    // Copy button handlers
+    container.querySelectorAll('.copy-button').forEach(button => {
+        button.addEventListener('click', () => {
+            const content = button.closest('.claude-block').querySelector('.block-content').textContent;
+            navigator.clipboard.writeText(content.trim())
+                .then(() => {
+                    button.textContent = '✓';
+                    setTimeout(() => button.textContent = '📋', 2000);
+                })
+                .catch(err => logger.error('Copy failed:', err));
+        });
+    });
+}
+
+// Add custom styles
+function addCustomStyles() {
+    const style = document.createElement('style');
+    style.textContent = `
+        .claude-block {
+            margin: 1rem 0;
+            border-radius: 8px;
+            background: var(--block-bg, #ffffff);
+            border: 1px solid var(--border-color, #e1e4e8);
+            overflow: hidden;
+        }
+
+        .block-header {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--header-bg, #f6f8fa);
+            border-bottom: 1px solid var(--border-color, #e1e4e8);
+        }
+
+        .block-header .icon {
+            margin-right: 8px;
+        }
+
+        .block-header .title {
+            flex: 1;
+            font-weight: 600;
+        }
+
+        .block-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .block-content {
+            padding: 12px;
+            overflow-x: auto;
+        }
+
+        .collapse-toggle, .copy-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            opacity: 0.7;
+        }
+
+        .collapse-toggle:hover, .copy-button:hover {
+            opacity: 1;
+            background: var(--button-hover-bg, rgba(0,0,0,0.1));
+        }
+
+        /* Block-specific styles */
+        .thinking-block {
+            border-left: 4px solid #0366d6;
+        }
+
+        .error-block {
+            border-left: 4px solid #cb2431;
+        }
+
+        .function-block {
+            border-left: 4px solid #28a745;
+        }
+
+        .profile-block {
+            border-left: 4px solid #6f42c1;
+        }
+
+        .context-block {
+            border-left: 4px solid #f6b73c;
+        }
+
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            .claude-block {
+                --block-bg: #0d1117;
+                --header-bg: #161b22;
+                --border-color: #30363d;
+                --button-hover-bg: rgba(255,255,255,0.1);
+            }
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .block-header {
+                flex-wrap: wrap;
+            }
+
+            .block-controls {
+                width: 100%;
+                justify-content: flex-end;
+                margin-top: 8px;
+            }
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+// Observe chat container for new messages
 function setupObserver() {
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
@@ -230,28 +383,10 @@ function setupObserver() {
     }
 }
 
-// Initial scanning of messages
+// Process all existing messages
 function processAllMessages() {
     const messages = document.querySelectorAll(`[data-element-id="${CONFIG.elementIds.messageContent}"]`);
     messages.forEach(processMessage);
-}
-
-// Add custom styles for rendered markdown
-function addCustomStyles() {
-    const style = document.createElement('style');
-    style.textContent = `
-        .converted-markdown {
-            font-family: inherit;
-            line-height: 1.5;
-            white-space: pre-wrap;
-        }
-        .converted-markdown code {
-            background-color: rgba(0,0,0,0.1);
-            padding: 2px 4px;
-            border-radius: 3px;
-        }
-    `;
-    document.head.appendChild(style);
 }
 
 // Initialize the extension
